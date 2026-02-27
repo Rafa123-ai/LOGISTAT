@@ -1,0 +1,9 @@
+﻿.venv/
+.venv_test/
+.venv_test_min/
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
+OUTPUT/

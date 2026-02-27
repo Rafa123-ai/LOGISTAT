@@ -1,0 +1,2 @@
+﻿C:\MIS DOCUMENTOS\Programa Logistica V5\21-02-26 logistat2\LOGISTAT_BACKUP\.venv\Scripts\python.exe
+3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]

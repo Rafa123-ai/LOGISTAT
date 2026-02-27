@@ -1,0 +1,200 @@
+from __future__ import annotations
+import os
+import tempfile
+import streamlit as st
+import pandas as pd
+from datetime import datetime
+
+from logistat_engine import run_logistat_v11, RULES
+from exports_planv9 import export_planv9_workbook, export_planv9_single_sheet, list_planv9_sheets
+
+import openpyxl
+from branding import COMPANY_NAME, ADDRESS, MAPS_URL, LOGISTAT_VERSION, AUTHOR_NAME, AUTHOR_ROLE
+
+def _postprocess_excel(excel_path: str) -> None:
+    """Agrega hoja INFO con metadata institucional."""
+    try:
+        wb = openpyxl.load_workbook(excel_path)
+        if "INFO" in wb.sheetnames:
+            ws = wb["INFO"]
+            ws.delete_rows(1, ws.max_row)
+        else:
+            ws = wb.create_sheet("INFO", 0)
+        rows = [
+            ("Empresa", COMPANY_NAME),
+            ("Dirección", ADDRESS),
+            ("Ubicación (Google Maps)", MAPS_URL),
+            ("Versión", LOGISTAT_VERSION),
+            ("Elaboró", AUTHOR_NAME),
+            ("Cargo", AUTHOR_ROLE),
+            ("Fecha", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        ]
+        for i,(k,v) in enumerate(rows, start=1):
+            ws.cell(row=i, column=1, value=k)
+            ws.cell(row=i, column=2, value=v)
+        ws.column_dimensions["A"].width = 26
+        ws.column_dimensions["B"].width = 95
+        wb.save(excel_path)
+    except Exception:
+        # No detener la app por un postproceso
+        return
+from config_store import load_config, save_config
+
+def _save_uploaded_to_tmp(uploaded_file, suffix: str) -> str:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(uploaded_file.getbuffer())
+        return tmp.name
+
+def _peek_plan_df(plan_file) -> pd.DataFrame | None:
+    try:
+        xls = pd.ExcelFile(plan_file)
+        # prioriza hoja PLAN si existe
+        sheet = "PLAN" if "PLAN" in xls.sheet_names else xls.sheet_names[0]
+        return pd.read_excel(xls, sheet_name=sheet)
+    except Exception:
+        return None
+
+def render():
+    st.header("🚚 Planeación (V11.x mejorado)")
+
+    base_dir = os.getcwd()
+    cfg = load_config(base_dir)
+
+    st.caption("Sube el PLAN (Excel) y opcionalmente el template de Diésel. Ajusta PLANTA_LAT/LON (muy importante) y ejecuta.")
+
+    col1, col2 = st.columns([0.6, 0.4])
+
+    with col1:
+        plan_file = st.file_uploader(
+            "PLAN (.xlsx) — columnas: cliente, obra, hora_solicitada, lat, lon, localidad, m3 (bombeable opcional)",
+            type=["xlsx"],
+            key="plan_up",
+        )
+        diesel_file = st.file_uploader(
+            "Diésel (opcional) — template con hojas dim_revolvedora y fact_revolvedoras",
+            type=["xlsx"],
+            key="diesel_up",
+        )
+
+    plan_df = _peek_plan_df(plan_file) if plan_file is not None else None
+
+    with col2:
+        st.subheader("Parámetros")
+        st.caption("Se guardan en config.json para no capturarlos cada vez.")
+
+        planta_lat = st.number_input("PLANTA_LAT", value=float(cfg.get("PLANTA_LAT", RULES.get("PLANTA_LAT", 0.0))), format="%.6f")
+        planta_lon = st.number_input("PLANTA_LON", value=float(cfg.get("PLANTA_LON", RULES.get("PLANTA_LON", 0.0))), format="%.6f")
+        cap_turno = st.number_input("PLANTA_CAP_M3_TURNO", value=float(cfg.get("PLANTA_CAP_M3_TURNO", RULES.get("PLANTA_CAP_M3_TURNO", 230.0))))
+        n_ollas = st.number_input("N_OLLAS_DISPONIBLES", value=int(cfg.get("N_OLLAS_DISPONIBLES", RULES.get("N_OLLAS_DISPONIBLES", 11))), step=1, min_value=1)
+        cap_olla = st.number_input("CAPACIDAD_OLLA_M3", value=float(cfg.get("CAPACIDAD_OLLA_M3", RULES.get("CAPACIDAD_OLLA_M3", 7.0))))
+
+        cA, cB = st.columns(2)
+        with cA:
+            if st.button("💾 Guardar parámetros", use_container_width=True):
+                save_config(base_dir, {
+                    "PLANTA_LAT": float(planta_lat),
+                    "PLANTA_LON": float(planta_lon),
+                    "PLANTA_CAP_M3_TURNO": float(cap_turno),
+                    "N_OLLAS_DISPONIBLES": int(n_ollas),
+                    "CAPACIDAD_OLLA_M3": float(cap_olla),
+                })
+                st.success("Guardado en config.json")
+
+        with cB:
+            if st.button("🧭 Autodetectar planta (promedio obras)", use_container_width=True, disabled=(plan_df is None)):
+                if plan_df is not None and {"lat","lon"}.issubset(set(map(str.lower, plan_df.columns))):
+                    # tolerante con mayúsculas
+                    cols = {c.lower(): c for c in plan_df.columns}
+                    lat_mean = float(pd.to_numeric(plan_df[cols["lat"]], errors="coerce").dropna().mean())
+                    lon_mean = float(pd.to_numeric(plan_df[cols["lon"]], errors="coerce").dropna().mean())
+                    st.session_state["__auto_planta_lat"] = lat_mean
+                    st.session_state["__auto_planta_lon"] = lon_mean
+                    st.warning("Autodetección aplicada temporalmente: revisa y luego guarda si te sirve.")
+                else:
+                    st.error("No pude detectar lat/lon en el PLAN.")
+
+        if "__auto_planta_lat" in st.session_state:
+            planta_lat = float(st.session_state["__auto_planta_lat"])
+            planta_lon = float(st.session_state["__auto_planta_lon"])
+            st.info(f"Temporal: PLANTA_LAT/LON = {planta_lat:.6f}, {planta_lon:.6f}")
+
+    if float(planta_lat) == 0.0 and float(planta_lon) == 0.0:
+        st.warning("PLANTA_LAT/LON están en 0,0. Eso dispara distancias irreales. Ajusta antes de ejecutar (o usa autodetectar).")
+
+    st.divider()
+
+    if plan_df is not None:
+        missing = []
+        required = ["cliente","obra","hora_solicitada","lat","lon","localidad","m3"]
+        cols_lower = {c.lower(): c for c in plan_df.columns}
+        for r in required:
+            if r not in cols_lower:
+                missing.append(r)
+        if missing:
+            st.error(f"Faltan columnas obligatorias en PLAN: {', '.join(missing)}")
+        else:
+            with st.expander("Vista rápida PLAN"):
+                st.dataframe(plan_df.head(25), use_container_width=True)
+
+    disabled_run = (plan_file is None) or (float(planta_lat) == 0.0 and float(planta_lon) == 0.0)
+
+    if st.button("▶️ Ejecutar LOGISTAT V11", use_container_width=True, disabled=disabled_run):
+        try:
+            plan_path = _save_uploaded_to_tmp(plan_file, ".xlsx")
+            diesel_path = _save_uploaded_to_tmp(diesel_file, ".xlsx") if diesel_file is not None else None
+
+            overrides = {
+                "PLANTA_LAT": float(planta_lat),
+                "PLANTA_LON": float(planta_lon),
+                "PLANTA_CAP_M3_TURNO": float(cap_turno),
+                "N_OLLAS_DISPONIBLES": int(n_ollas),
+                "CAPACIDAD_OLLA_M3": float(cap_olla),
+            }
+
+            result = run_logistat_v11(
+                plan_path=plan_path,
+                diesel_template_path=diesel_path,
+                base_dir=base_dir,
+                rules_overrides=overrides,
+            )
+
+            st.session_state["result"] = result
+            st.session_state["out_xlsx"] = result.get("plan_excel")
+
+# Exportación PLAN_V9 (workbook completo + hojas separadas)
+try:
+    out_dir = os.path.join(base_dir, "OUTPUT")
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    planv9_full = os.path.join(out_dir, f"PLAN_V9_EXPORT_COMPLETO_{stamp}.xlsx")
+    export_planv9_workbook(result, planv9_full)
+    st.session_state["out_planv9_full"] = planv9_full
+
+    planv9_sheets = {}
+    for sh in list_planv9_sheets():
+        pth = os.path.join(out_dir, f"PLAN_V9_{sh}_{stamp}.xlsx")
+        export_planv9_single_sheet(result, sh, pth)
+        planv9_sheets[sh] = pth
+    st.session_state["out_planv9_sheets"] = planv9_sheets
+except Exception as e:
+    st.warning(f"No se pudo generar exportación PLAN_V9: {e}")
+
+            st.success("Listo. Revisa Dashboard / Reportes.")
+
+            with st.expander("Resumen"):
+                st.dataframe(result.get("resumen"), use_container_width=True)
+            with st.expander("Alertas"):
+                st.dataframe(result.get("alertas_plan"), use_container_width=True)
+            with st.expander("Plan calculado (primeras filas)"):
+                pc = result.get("plan_calculado")
+                st.dataframe(pc.head(200) if hasattr(pc, "head") else pc, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Error al ejecutar: {e}")
+
+    if st.button("🧹 Limpiar sesión", use_container_width=True):
+        for k in ["result", "out_xlsx", "last_pdf_path", "__auto_planta_lat", "__auto_planta_lon"]:
+            if k in st.session_state:
+                del st.session_state[k]
+        st.success("Sesión limpia.")
