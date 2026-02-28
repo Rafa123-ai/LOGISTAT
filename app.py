@@ -1,4 +1,59 @@
-﻿APP_BUILD = 'BRANDED-1.0'
+﻿import streamlit as st
+
+st.set_page_config(
+    page_title="LOGISTAT",
+    page_icon="static/logo-192.png",
+    layout="wide"
+)
+
+st.markdown(
+    '''
+    <link rel="manifest" href="/static/manifest.json">
+    ''',
+    unsafe_allow_html=True,
+)
+import streamlit as st
+
+st.set_page_config(
+    page_title="LOGISTAT",
+    page_icon="static/logo-192.png",
+    layout="wide"
+)
+
+st.markdown(
+    '''
+    <link rel="manifest" href="/static/manifest.json">
+    ''',
+    unsafe_allow_html=True,
+)
+
+
+
+
+
+
+
+
+
+
+
+import streamlit as st
+
+st.set_page_config(
+    page_title="LOGISTAT",
+    page_icon="static/logo-192.png",
+    layout="wide"
+)
+
+st.markdown(
+    """
+    <link rel="manifest" href="/static/manifest.json">
+    """,
+    unsafe_allow_html=True,
+)
+
+
+APP_BUILD = 'BRANDED-1.0'
 import streamlit as st
 from branding import COMPANY_NAME, LOGISTAT_VERSION, AUTHOR_NAME, AUTHOR_ROLE
 from datetime import datetime
@@ -41,6 +96,8 @@ with r2c3:
         st.switch_page("pages/6_Reportes.py")
 
 st.info("Este build usa tu motor logistat_engine.py (V11.x).")
+
+
 
 
 
